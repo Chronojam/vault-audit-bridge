@@ -1,0 +1,11 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: vault-audit-bridge
+spec:
+  selector:
+    app: vault-bridge
+  ports:
+    - protocol: TCP
+      port: 3333
+      targetPort: 3333

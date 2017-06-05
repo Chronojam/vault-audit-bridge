@@ -1,0 +1,37 @@
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: vault-bridge
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: vault-bridge
+    spec:
+      volumes:
+      - name: gcloud-keyfile
+        secret:
+          secretName: "vault-audit-keyfile"
+      - name: ssl
+        hostPath:
+          path: "/etc/ssl/certs"
+      containers:
+      - name: bridge
+        image: quay.io/chronojam/vault-audit-bridge:latest
+        imagePullPolicy: Always
+        args:
+        - "-google.project=MY_PROJECT"
+        - "-datastore.entity=vault-audit"
+        env:
+        - name: "GOOGLE_APPLICATION_CREDENTIALS"
+          value: "/etc/bridge/gcloud-keyfile.json"
+        volumeMounts:
+        - name: gcloud-keyfile
+          readOnly: true
+          mountPath: "/etc/bridge"
+        - name: ssl
+          readOnly: true
+          mountPath: "/etc/ssl/certs"
+        ports:
+        - containerPort: 3333
