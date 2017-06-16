@@ -3,33 +3,30 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
+	"io"
 	"log"
 	"net"
-	"os"
 
 	"cloud.google.com/go/datastore"
 
 	"golang.org/x/net/context"
 )
 
-const (
-	CONN_HOST = "0.0.0.0"
-	CONN_PORT = "3333"
-	CONN_TYPE = "tcp"
-)
-
 var (
-	GoogleCloudProject = flag.String("google.project", "", "Google cloud project")
-	DatastoreEntity    = flag.String("datastore.entity", "vault-audit", "Datastore Entity")
+	googleCloudProject = flag.String("google.project", "", "Google cloud project")
+	datastoreEntity    = flag.String("datastore.entity", "vault-audit", "Datastore Entity")
+	addr               = flag.String("addr", "0.0.0.0:3333", "address to listen on")
+	proto              = flag.String("proto", "tcp", "protocol listen on")
 )
 
+// AuditEntry represents a vault audit entry
 type AuditEntry struct {
 	Timestamp string
 	Path      string
 	Entry     string
 }
 
+// UnmarshalJSON implements JSON unsmarshaling for a vault audit event
 func (a *AuditEntry) UnmarshalJSON(data []byte) error {
 	p := map[string]interface{}{}
 	err := json.Unmarshal(data, &p)
@@ -45,16 +42,44 @@ func (a *AuditEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// AuditHandler is a GCP DataStore based audit event handler
 type AuditHandler struct {
 	bqClient *datastore.Client
+}
+
+// HandleRequest incoming requests.
+func (ah *AuditHandler) HandleRequest(conn net.Conn) {
+	ctx := context.Background()
+	// Close the connection when you're done with it.
+	defer conn.Close()
+
+	key := datastore.NameKey(*datastoreEntity, "", nil)
+	dec := json.NewDecoder(conn)
+	for {
+		ae := &AuditEntry{}
+		err := dec.Decode(ae)
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			log.Printf("error decoding, %v", err)
+			continue
+		}
+
+		_, err = ah.bqClient.Put(ctx, key, ae)
+		if err != nil {
+			log.Printf("error adding to datastore, %v", err)
+		}
+	}
 }
 
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	d, err := datastore.NewClient(ctx, *GoogleCloudProject)
+
+	d, err := datastore.NewClient(ctx, *googleCloudProject)
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatalf("failed creating datastore client, %v", err)
 	}
 
 	ah := &AuditHandler{
@@ -62,46 +87,22 @@ func main() {
 	}
 
 	// Listen for incoming connections.
-	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
+	l, err := net.Listen(*proto, *addr)
 	if err != nil {
-		fmt.Println("Error listening:", err.Error())
-		os.Exit(1)
+		log.Fatalf("error listening, %v", err)
 	}
 	// Close the listener when the application closes.
 	defer l.Close()
-	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
+
+	log.Printf("Listening on %s(%s)", *proto, *addr)
 	for {
 		// Listen for an incoming connection.
 		conn, err := l.Accept()
 		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
-			os.Exit(1)
+			log.Printf("error accepting connection, %v", err)
+			continue
 		}
 		// Handle connections in a new goroutine.
 		go ah.HandleRequest(conn)
 	}
-}
-
-// Handles incoming requests.
-func (ah *AuditHandler) HandleRequest(conn net.Conn) {
-	ctx := context.Background()
-	// Close the connection when you're done with it.
-	defer conn.Close()
-
-	key := datastore.NameKey(*DatastoreEntity, "", nil)
-	dec := json.NewDecoder(conn)
-	for {
-		ae := &AuditEntry{}
-		err := dec.Decode(ae)
-		if err != nil {
-			log.Printf("Error Decoding", err.Error())
-			continue
-		}
-
-		_, err = ah.bqClient.Put(ctx, key, ae)
-		if err != nil {
-			log.Printf(err.Error())
-		}
-	}
-
 }
